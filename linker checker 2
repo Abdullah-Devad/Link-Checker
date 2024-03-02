@@ -1,0 +1,217 @@
+/**
+*
+* Report Redirects
+*
+* Creates a report indicating which ads, sitelinks and keywords have urls that are redirects
+*
+* @author: Nils Rooijmans
+*
+* contact nils@nilsrooijmans.com for questions and a High Performance MCC version of the script	
+*/
+
+// CHANGE SETTINGS HERE
+
+var SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1_/" ;  //insert a new blank spreadsheet url
+var EMAIL = "info@takteek.sa"; //insert your email
+
+
+// NO CHANGES NEEDED BELOW THIS LINE
+
+var HTTP_OPTIONS = {'followRedirects':false };
+
+var REDIRECT_CODES = [301,302, 303, 307, 308, 404];
+var ERRORCODE = "ERROR TESTING URL";
+
+var urlResponseCodes = []; // store http response code objects for urls in the account
+var totalNumberOfRedirects = 0; // how many redirect(s) did we detect in total?
+
+var sheet = SpreadsheetApp.openByUrl(SPREADSHEET_URL).getActiveSheet();
+
+function main() {
+  
+  // prepare the sheet
+  sheet.setName("Redirect Report");
+  sheet.clearContents();
+  if (sheet.getRange('A1').isBlank()) {
+    sheet.appendRow(["campaign name", "ad group name", "ad id",  "keyword", "sitelink", "url", "response code", "clicks"]);
+  }
+  
+  // check ad urls
+  var adSelector = AdWordsApp.ads().withCondition("Status = 'ENABLED'").withCondition("AdGroupStatus = 'ENABLED'").withCondition("CampaignStatus = 'ENABLED'");
+  var adIterator = adSelector.get();
+  
+	while (adIterator.hasNext()) {
+  	var ad = adIterator.next();
+	  checkAdUrls(ad);
+  }
+  
+  // check keyword urls
+  var keywordSelector = AdWordsApp.keywords().withCondition("Status = 'ENABLED'").withCondition("AdGroupStatus = 'ENABLED'").withCondition("CampaignStatus = 'ENABLED'");
+  var keywordIterator = keywordSelector.get();
+  
+	while (keywordIterator.hasNext()) {
+  	var keyword = keywordIterator.next();
+	  checkKeywordUrls(keyword);
+  }  
+  
+  // check sitelink urls
+  var adGroupSelector = AdWordsApp.adGroups().withCondition("Status = 'ENABLED'").withCondition("CampaignStatus = 'ENABLED'");
+  var adGroupIterator = adGroupSelector.get();
+  
+	while (adGroupIterator.hasNext()) {
+  	var adGroup = adGroupIterator.next();
+	  checkSitelinkUrls(adGroup);
+  }  
+  
+  // if we have redirects, send email alert
+  if (totalNumberOfRedirects > 0) {
+    // prepare the email
+    var html = [];
+    html.push(
+      "<html>",
+      "<body>", 
+      "<p>New Google Ads Redirect Report Available at: "+SPREADSHEET_URL+"</p>",
+      "<P>Number of Redirects found: "+totalNumberOfRedirects+"</p>",
+      "</body>",
+      "</html>"
+    );
+    
+    MailApp.sendEmail(EMAIL, "New Redirect Report Available", "", {htmlBody: html.join("\n")});
+  }
+  
+  Logger.log("Report available at " + SPREADSHEET_URL);
+  
+}
+
+function checkAdUrls(ad) {
+
+  var responseCode;
+   
+  var finalUrl = ad.urls().getFinalUrl();
+  if (finalUrl != null) {
+    responseCode = getResponseCode(finalUrl);
+    if (isInArray(responseCode, REDIRECT_CODES) || responseCode == ERRORCODE) { // we've got a redirect or error
+      Logger.log("Redirect on: " + finalUrl + " --> " + responseCode );
+      sheet.appendRow([ad.getCampaign().getName(), ad.getAdGroup().getName(), ad.getId(), "", "", finalUrl, responseCode, ad.getStatsFor("LAST_30_DAYS").getClicks()]);
+    }
+  } 
+
+  var mobileFinalUrl = ad.urls().getMobileFinalUrl();
+  if (mobileFinalUrl != null) {
+    responseCode = getResponseCode(mobileFinalUrl);
+    if (isInArray(responseCode, REDIRECT_CODES) || responseCode == ERRORCODE) { // we've got a redirect or error
+      Logger.log("Redirect on: " + mobileFinalUrl + " --> " + responseCode);
+      totalNumberOfRedirects++;
+      sheet.appendRow([ad.getCampaign().getName(), ad.getAdGroup().getName(), ad.getId(), "", "", mobileFinalUrl, responseCode, ad.getStatsFor("LAST_30_DAYS").getClicks()]);
+    }
+  }   
+}
+
+
+function checkKeywordUrls(keyword) {
+
+  Logger.log("Checking keyword: "+keyword.getText());
+
+  var responseCode;
+   
+  var finalUrl = keyword.urls().getFinalUrl();
+  if (finalUrl != null) {
+    responseCode = getResponseCode(finalUrl);
+    if (isInArray(responseCode, REDIRECT_CODES) || responseCode == ERRORCODE) { // we've got a redirect or error
+      Logger.log("Redirect on: " + finalUrl + " --> " + responseCode );
+      totalNumberOfRedirects++;
+      sheet.appendRow([keyword.getCampaign().getName(), keyword.getAdGroup().getName(), "", " "+keyword.getText(), "", finalUrl, responseCode, keyword.getStatsFor("LAST_30_DAYS").getClicks()]);
+    }
+  } 
+
+  var mobileFinalUrl = keyword.urls().getMobileFinalUrl();
+  if (mobileFinalUrl != null) {
+    responseCode = getResponseCode(mobileFinalUrl);
+    if (isInArray(responseCode, REDIRECT_CODES) || responseCode == ERRORCODE) { // we've got a redirect or error
+      Logger.log("Redirect on: " + mobileFinalUrl + " --> " + responseCode);
+      totalNumberOfRedirects++;
+      sheet.appendRow([keyword.getCampaign().getName(), keyword.getAdGroup().getName(), "", " "+keyword.getText(), "", mobileFinalUrl, responseCode, keyword.getStatsFor("LAST_30_DAYS").getClicks()]);
+    }
+  }   
+}
+
+
+function checkSitelinkUrls(adgroup) {
+
+  Logger.log("Checking sitelinks for ad group: "+adgroup.getName());
+
+  var responseCode;
+
+  var adGroupSitelinkIterator = adgroup.extensions().sitelinks().get();
+  if (adGroupSitelinkIterator.totalNumEntities() < 1) { // no sitelinks at ad group level, so let's check the campaign level
+    adGroupSitelinkIterator = adgroup.getCampaign().extensions().sitelinks().get();
+  }
+  
+  /* NO SOLUTION FOR ACCOUNT LEVEL YET  
+  if (adGroupSitelinkIterator.totalNumEntities() < 1) { // no sitelinks at ad group level and no sitelinks at campaign level, so let's check the account level
+    adGroupSitelinkIterator = AdWordsApp.currentAccount().extensions().sitelinks().get();
+  }
+*/
+  
+  while (adGroupSitelinkIterator.hasNext()) {
+  
+    var sitelink = adGroupSitelinkIterator.next();
+    Logger.log("Checking sitelink: "+sitelink.getLinkText());
+    
+    var finalUrl = sitelink.urls().getFinalUrl();
+    if (finalUrl != null) {
+      responseCode = getResponseCode(finalUrl);
+      if (isInArray(responseCode, REDIRECT_CODES) || responseCode == ERRORCODE) { // we've got a redirect or error
+        Logger.log("Redirect on: " + finalUrl + " --> " + responseCode );
+        totalNumberOfRedirects++;
+        sheet.appendRow([adgroup.getCampaign().getName(), adgroup.getName(), "","", sitelink.getLinkText(), finalUrl, responseCode, "UNKNOWN"]);
+      }
+    }  
+
+    var mobileFinalUrl = sitelink.urls().getMobileFinalUrl();
+    if (mobileFinalUrl != null) {
+      responseCode = getResponseCode(mobileFinalUrl);
+      if (isInArray(responseCode, REDIRECT_CODES) || responseCode == ERRORCODE) { // we've got a redirect or error
+        Logger.log("Redirect on: " + mobileFinalUrl + " --> " + responseCode );
+        totalNumberOfRedirects++;
+        sheet.appendRow([adgroup.getCampaign().getName(), adgroup.getName(), "","", sitelink.getLinkText(), mobileFinalUrl, responseCode, "UNKNOWN"]);
+      }
+    }  
+  }
+}
+
+
+
+function getResponseCode(url) {
+  var responseObject = findObjectInArray(url, 'url', urlResponseCodes);
+  if (responseObject != false) { // url response already tested
+    //Logger.log("URL already tested: " + url + " --> " + responseObject.responsecode);
+    return responseObject.responsecode;  
+  } else {
+    try {
+      var response;
+      Logger.log("Testing url: "+url);
+      response = UrlFetchApp.fetch(url, HTTP_OPTIONS).getResponseCode();
+      Logger.log("URL response code: " + response);
+      urlResponseCodes.push({url : url, responsecode : response});
+      return response;
+    } catch(e) {
+      Logger.log(" #### Error Testing url: "+url+" ERROR: "+e);
+      return ERRORCODE;
+    }
+  }
+} 
+
+function isInArray(value, array) {
+  return array.indexOf(value) > -1;
+}
+
+function findObjectInArray(value, prop, array){
+  for (var i=0; i < array.length; i++) {
+      if (array[i][prop] === value) {
+          return array[i];
+      }
+  }
+  return false;
+}
+
